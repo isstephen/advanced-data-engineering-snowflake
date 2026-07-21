@@ -1,0 +1,80 @@
+name: Deploy Templatized Data Environment
+
+on:
+  push:
+    branches:
+      - Staging
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: snowflake-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy_data_environment:
+    if: github.ref_name == 'Staging' || github.ref_name == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set deployment environment
+        shell: bash
+        run: |
+          case "${GITHUB_REF_NAME}" in
+            Staging)
+              deploy_env="staging"
+              ;;
+            main)
+              deploy_env="prod"
+              ;;
+            *)
+              echo "Unsupported deployment branch: ${GITHUB_REF_NAME}" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "TARGET_BRANCH=${GITHUB_REF_NAME}" >> "${GITHUB_ENV}"
+          echo "DEPLOY_ENV=${deploy_env}" >> "${GITHUB_ENV}"
+
+      - name: Install Snowflake CLI
+        uses: snowflakedb/snowflake-actions@v3
+        with:
+          cli-version: "3.23.0"
+          default-config-file-path: "config.toml"
+
+      - name: Test Snowflake connection
+        run: |
+          snow connection test \
+            -c advanced_data_engineering_snowflake
+
+      - name: Fetch latest repository changes in Snowflake
+        run: |
+          snow git fetch \
+            COURSE_REPO.PUBLIC.ADVANCED_DATA_ENGINEERING_SNOWFLAKE \
+            -c advanced_data_engineering_snowflake \
+            --database COURSE_REPO \
+            --schema PUBLIC
+
+      - name: Deploy data environment
+        run: |
+          echo "Deploying ${TARGET_BRANCH} to ${DEPLOY_ENV}"
+          snow git execute \
+            "@COURSE_REPO.PUBLIC.ADVANCED_DATA_ENGINEERING_SNOWFLAKE/branches/${TARGET_BRANCH}/module-1/hamburg_weather/pipeline/data/" \
+            -c advanced_data_engineering_snowflake \
+            --database COURSE_REPO \
+            --schema PUBLIC \
+            -D "env='${DEPLOY_ENV}'"
